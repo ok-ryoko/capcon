@@ -1,0 +1,166 @@
+#!/usr/bin/stap
+#
+# Copyright 2023 OK Ryoko
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# capcon - Capabilities in context
+#
+# USAGE: stap [-G follow_forks=1] [-G with_context=1] [...] capcon.stp
+#
+# Print a trace of only those syscalls during which the kernel performed one or
+# more capability checks. On each line, display:
+#
+# - the Unix epoch at which the syscall returned, in nanoseconds;
+# - the command/executable name;
+# - the thread ID;
+# - the syscall name, arguments and return value, and
+# - the name and count of each capability that was checked during the syscall.
+#
+# When `follow_forks` is equal to 1, also print traces for children of the
+# target process
+#
+# When `with_context` is equal to 1, also print a line for each successful
+# invocation of the open, openat and socket syscalls
+#
+# Does not require debuginfo
+#
+# Assumes that every syscall is atomic and that every capability check happens
+# within the context of the last called syscall
+
+global follow_forks = 0
+global with_context = 0
+
+private sysc_id = 0
+private sysc_str%
+private sysc_checks_for_caps%
+private sysc_caps_checked%
+
+global capabilities[41]
+
+# Populate the `capabilities` global variable with the capabilities defined in
+# linux/include/uapi/linux/capability.h@v6.0
+#
+function define_capabilities() {
+	capabilities[0] = "CAP_CHOWN"
+	capabilities[1] = "CAP_DAC_OVERRIDE"
+	capabilities[2] = "CAP_DAC_READ_SEARCH"
+	capabilities[3] = "CAP_FOWNER"
+	capabilities[4] = "CAP_FSETID"
+	capabilities[5] = "CAP_KILL"
+	capabilities[6] = "CAP_SETGID"
+	capabilities[7] = "CAP_SETUID"
+	capabilities[8] = "CAP_SETPCAP"
+	capabilities[9] = "CAP_LINUX_IMMUTABLE"
+	capabilities[10] = "CAP_NET_BIND_SERVICE"
+	capabilities[11] = "CAP_NET_BROADCAST"
+	capabilities[12] = "CAP_NET_ADMIN"
+	capabilities[13] = "CAP_NET_RAW"
+	capabilities[14] = "CAP_IPC_LOCK"
+	capabilities[15] = "CAP_IPC_OWNER"
+	capabilities[16] = "CAP_SYS_MODULE"
+	capabilities[17] = "CAP_SYS_RAWIO"
+	capabilities[18] = "CAP_SYS_CHROOT"
+	capabilities[19] = "CAP_SYS_PTRACE"
+	capabilities[20] = "CAP_SYS_PACCT"
+	capabilities[21] = "CAP_SYS_ADMIN"
+	capabilities[22] = "CAP_SYS_BOOT"
+	capabilities[23] = "CAP_SYS_NICE"
+	capabilities[24] = "CAP_SYS_RESOURCE"
+	capabilities[25] = "CAP_SYS_TIME"
+	capabilities[26] = "CAP_SYS_TTY_CONFIG"
+	capabilities[27] = "CAP_MKNOD"
+	capabilities[28] = "CAP_LEASE"
+	capabilities[29] = "CAP_AUDIT_WRITE"
+	capabilities[30] = "CAP_AUDIT_CONTROL"
+	capabilities[31] = "CAP_SETFCAP"
+	capabilities[32] = "CAP_MAC_OVERRIDE"
+	capabilities[33] = "CAP_MAC_ADMIN"
+	capabilities[34] = "CAP_SYSLOG"
+	capabilities[35] = "CAP_WAKE_ALARM"
+	capabilities[36] = "CAP_BLOCK_SUSPEND"
+	capabilities[37] = "CAP_AUDIT_READ"
+	capabilities[38] = "CAP_PERFMON"
+	capabilities[39] = "CAP_BPF"
+	capabilities[40] = "CAP_CHECKPOINT_RESTORE"
+}
+
+# Return 1 if the target process is the stapio process that ran this script and
+# 0 otherwise
+#
+function is_stapio:long() {
+	if (pid() == stp_pid()) {
+		return 1
+	}
+	return 0
+}
+
+private function filter:long() {
+	result = 0
+	result |= follow_forks == 0 && pid() != target()
+	result |= follow_forks == 1 && target_set_pid(pid()) == 0
+	result |= is_stapio()
+	return result
+}
+
+probe begin {
+	define_capabilities()
+}
+
+probe nd_syscall.*.call {
+	if (filter()) next
+	sysc_id += 1
+	sysc_str[sysc_id, tid()] = sprintf("%s<%d> %s(%s)",
+		execname(),
+		tid(),
+		name,
+		argstr)
+}
+
+probe nd_syscall.*.return {
+	timestamp = gettimeofday_ns()
+
+	if (filter()) next
+	if (sysc_checks_for_caps[sysc_id, tid()] != 1) next
+
+	line = sprintf("%d %s = %s",
+			timestamp,
+			sysc_str[sysc_id, tid()],
+			retstr)
+
+	sysc_capstr = ""
+	foreach ([i, t, c] in sysc_caps_checked) {
+		if (i != sysc_id || t != tid()) continue
+		capstr = sprintf("%s:%d",
+			capabilities[c],
+			@count(sysc_caps_checked[sysc_id, tid(), c]))
+		if (strlen(sysc_capstr) > 0) {
+			sysc_capstr = sprintf("%s, %s", sysc_capstr, capstr)
+		} else {
+			sysc_capstr = sprintf("%s", capstr)
+		}
+	}
+
+	if (strlen(sysc_capstr) > 0) {
+		line = sprintf("%s {%s}", line, sysc_capstr)
+	}
+
+	printf("%s\n", line)
+}
+
+probe nd_syscall.{open, openat, socket}.return {
+	timestamp = gettimeofday_ns()
+
+	if (filter()) next
+	if (sysc_checks_for_caps[sysc_id, tid()] == 1) next
+	if (with_context == 0) next
+	if (retval < 0) next
+
+	printf("%d %s = %d\n", timestamp, sysc_str[sysc_id, tid()], retval)
+}
+
+probe kprobe.function("cap_capable").call {
+	if (filter()) next
+	sysc_checks_for_caps[sysc_id, tid()] = 1
+	cap = int_arg(3)
+	sysc_caps_checked[sysc_id, tid(), cap] <<< 1
+}
