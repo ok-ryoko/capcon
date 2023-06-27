@@ -11,29 +11,43 @@
 # more capability checks. On each line, display:
 #
 # - the Unix epoch at which the syscall returned, in nanoseconds;
-# - the command/executable name;
+# - the command name;
 # - the thread ID;
 # - the syscall name, arguments and return value, and
-# - the name and count of each capability that was checked during the syscall.
-#
-# When `follow_forks` is equal to 1, also print traces for children of the
-# target process
-#
-# When `with_context` is equal to 1, also print a line for each successful
-# invocation of the open, openat and socket syscalls
+# - the name and count of each capability checked during the syscall
 #
 # Does not require debuginfo
 #
+# When `follow_forks` is equal to 1 and this script is run in target process
+# mode, print a trace for each child process of the target process
+#
+# When `with_context` is equal to 1, print a decoded file descriptor for any
+# syscall that takes a file descriptor as its 1st argument
+#
 # Assumes that every syscall is atomic and that every capability check happens
-# within the context of the last called syscall
+# within the context of the last called syscall; does not make any assumptions
+# about which syscalls do and do not involve capability checks
+#
+# Does not know about the `openat2` and `quotactl_fd` syscalls because they are
+# not implemented in the SystemTap tapsets
+#
+# Does not consider the following SystemTap probe points, as they correspond to
+# legacy syscalls:
+#
+# - `nd_syscall.nfsservctl`
+# - `nd_syscall.timerfd`
+# - `nd_syscall.tux`
+# 
+# Tested with SystemTap v4.8 and Linux v6.0.7 on a x86_64 machine
+
+@define AT_FDCWD %( -100 %)
 
 global follow_forks = 0
 global with_context = 0
 
-private sysc_id = 0
-private sysc_str%
-private sysc_checks_for_caps%
-private sysc_caps_checked%
+private sysc_str%       # [tid()]
+private sysc_capcounts% # [tid(), long]
+private sysc_context%   # [tid(), long]
 
 global capabilities[41]
 
@@ -95,6 +109,9 @@ function is_stapio:long() {
 }
 
 private function filter:long() {
+	if (target() == 0) {
+		return 0
+	}
 	result = 0
 	result |= follow_forks == 0 && pid() != target()
 	result |= follow_forks == 1 && target_set_pid(pid()) == 0
@@ -106,61 +123,561 @@ probe begin {
 	define_capabilities()
 }
 
-probe nd_syscall.*.call {
-	if (filter()) next
-	sysc_id += 1
-	sysc_str[sysc_id, tid()] = sprintf("%s<%d> %s(%s)",
+probe kprobe.function("cap_capable").call {
+	if (filter() == 1) next
+	cap = int_arg(3)
+	sysc_capcounts[tid(), cap] <<< 1
+}
+
+# Syscalls that expect a file descriptor as the 1st argument
+#
+probe fd_syscall = nd_syscall.{
+	close,
+	compat_fadvise64,
+	compat_fadvise64_64,
+	compat_fallocate,
+	compat_readahead,
+	compat_vmsplice,
+	fadvise,
+	fadvise64,
+	fadvise64_64,
+	fallocate,
+	fchdir,
+	fchmod,
+	fchown,
+	fchown16,
+	fcntl,
+	fdatasync,
+	fgetxattr,
+	finit_module,
+	flistxattr,
+	flock,
+	fremovexattr,
+	fsetxattr,
+	fstat,
+	fstatfs,
+	fstatfs64,
+	fsync,
+	ftruncate,
+	ftruncate64,
+	getdents,
+	getdents64,
+	inotify_add_watch,
+	inotify_rm_watch,
+	ioctl,
+	lseek,
+	pread,
+	pread64,
+	preadv,
+	preadv2,
+	pwrite,
+	pwrite32,
+	pwrite64,
+	pwritev,
+	pwritev2,
+	quotactl_fd,
+	read,
+	readahead,
+	readdir,
+	readv,
+	setns,
+	sync_file_range,
+	sync_file_range2,
+	syncfs,
+	sys32_getdents,
+	vmsplice,
+	write,
+	writev
+} ? {}
+
+# Syscalls that expect a directory file descriptor as the 1st argument and a
+# pointer to a character string containing an absolute or a relative path as
+# the 2nd argument
+#
+probe dirfd_syscall = nd_syscall.{
+	compat_execveat,
+	compat_futimesat,
+	compat_utimensat,
+	execveat,
+	faccessat,
+	faccessat2,
+	fchmodat,
+	fchownat,
+	fstatat,
+	fstatat64,
+	futimesat,
+	mkdirat,
+	mknodat,
+	mount_setattr,
+	name_to_handle_at,
+	newfstatat,
+	openat,
+	readlinkat,
+	statx,
+	unlinkat,
+	utimensat
+} ? {}
+
+# All other syscalls not in fd_syscall and dirfd_syscall
+#
+probe other_syscall = nd_syscall.{
+	accept,
+	accept4,
+	access,
+	acct,
+	add_key,
+	adjtimex,
+	alarm,
+	arch_prctl,
+	bdflush,
+	bind,
+	bpf,
+	brk,
+	capget,
+	capset,
+	chdir,
+	chmod,
+	chown,
+	chown16,
+	chroot,
+	clock_adjtime,
+	clock_getres,
+	clock_gettime,
+	clock_nanosleep,
+	clock_settime,
+	clone,
+	compat_adjtimex,
+	compat_clock_nanosleep,
+	compat_clock_settime,
+	compat_execve,
+	compat_ftruncate64,
+	compat_futex,
+	compat_get_mempolicy,
+	compat_getitimer,
+	compat_lookup_dcookie,
+	compat_mbind,
+	compat_nanosleep,
+	compat_ppoll,
+	compat_pselect6,
+	compat_pselect7,
+	compat_recvmmsg,
+	compat_select,
+	compat_set_mempolicy,
+	compat_setitimer,
+	compat_signalfd,
+	compat_sys_msgctl,
+	compat_sys_msgrcv,
+	compat_sys_msgsnd,
+	compat_sys_semctl,
+	compat_sys_semtimedop,
+	compat_sys_shmat,
+	compat_sys_shmctl,
+	compat_sys_utimes,
+	compat_timer_gettime,
+	compat_timer_settime,
+	compat_truncate64,
+	compat_utime,
+	connect,
+	copy_file_range,
+	creat,
+	delete_module,
+	dup,
+	dup2,
+	dup3,
+	epoll_create,
+	epoll_ctl,
+	epoll_pwait,
+	epoll_wait,
+	eventfd,
+	execve,
+	exit,
+	exit_group,
+	fanotify_init,
+	fanotify_mark,
+	fork,
+	futex,
+	get_mempolicy,
+	get_robust_list,
+	get_thread_area,
+	getcpu,
+	getcwd,
+	getegid,
+	geteuid,
+	getgid,
+	getgroups,
+	gethostname,
+	getitimer,
+	getpeername,
+	getpgid,
+	getpgrp,
+	getpid,
+	getppid,
+	getpriority,
+	getrandom,
+	getresgid,
+	getresgid16,
+	getresuid,
+	getresuid16,
+	getrlimit,
+	getrusage,
+	getsid,
+	getsockname,
+	getsockopt,
+	gettid,
+	gettimeofday,
+	getuid,
+	getxattr,
+	init_module,
+	inotify_init,
+	io_cancel,
+	io_destroy,
+	io_getevents,
+	io_setup,
+	io_submit,
+	ioperm,
+	iopl,
+	ioprio_get,
+	ioprio_set,
+	ipc,
+	kcmp,
+	kexec_file_load,
+	kexec_load,
+	keyctl,
+	kill,
+	lchown,
+	lchown16,
+	lgetxattr,
+	link,
+	linkat,
+	listen,
+	listxattr,
+	llistxattr,
+	llseek,
+	lookup_dcookie,
+	lremovexattr,
+	lsetxattr,
+	lstat,
+	madvise,
+	mbind,
+	membarrier,
+	memfd_create,
+	memfd_secret,
+	migrate_pages,
+	mincore,
+	mkdir,
+	mknod,
+	mlock,
+	mlock2,
+	mlockall,
+	mmap,
+	mmap2,
+	mmap32,
+	modify_ldt,
+	mount,
+	move_pages,
+	mprotect,
+	mq_getsetattr,
+	mq_notify,
+	mq_open,
+	mq_timedreceive,
+	mq_timedsend,
+	mq_unlink,
+	mremap,
+	msgctl,
+	msgget,
+	msgrcv,
+	msgsnd,
+	msync,
+	munlock,
+	munlockall,
+	munmap,
+	nanosleep,
+	ni_syscall,
+	nice,
+	open,
+	open_by_handle_at,
+	pause,
+	perf_event_open,
+	personality,
+	pipe,
+	pipe32,
+	pivot_root,
+	pkey_alloc,
+	pkey_free,
+	pkey_mprotect,
+	poll,
+	ppc32_timer_create,
+	ppc64_newuname,
+	ppc64_personality,
+	ppc64_sys32_stime,
+	ppc64_sys_stime,
+	ppc_rtas,
+	ppoll,
+	prctl,
+	prlimit64,
+	process_vm_readv,
+	process_vm_writev,
+	pselect6,
+	pselect7,
+	ptrace,
+	quotactl,
+	readlink,
+	reboot,
+	recvfrom,
+	recvmmsg,
+	recvmsg,
+	remap_file_pages,
+	removexattr,
+	rename,
+	renameat,
+	renameat2,
+	request_key,
+	restart_syscall,
+	rmdir,
+	rt_sigaction,
+	rt_sigaction32,
+	rt_sigpending,
+	rt_sigprocmask,
+	rt_sigqueueinfo,
+	rt_sigreturn,
+	rt_sigsuspend,
+	rt_sigtimedwait,
+	rt_tgsigqueueinfo,
+	sched_get_priority_max,
+	sched_get_priority_min,
+	sched_getaffinity,
+	sched_getattr,
+	sched_getparam,
+	sched_getscheduler,
+	sched_rr_get_interval,
+	sched_setaffinity,
+	sched_setattr,
+	sched_setparam,
+	sched_setscheduler,
+	sched_yield,
+	seccomp,
+	select,
+	semctl,
+	semget,
+	semop,
+	semtimedop,
+	sendfile,
+	sendmmsg,
+	sendmsg,
+	sendto,
+	set_mempolicy,
+	set_robust_list,
+	set_thread_area,
+	set_tid_address,
+	set_zone_reclaim,
+	setdomainname,
+	setfsgid,
+	setfsuid,
+	setgid,
+	setgroups,
+	sethostname,
+	setitimer,
+	setpgid,
+	setpriority,
+	setregid,
+	setregid16,
+	setresgid,
+	setresgid16,
+	setresuid,
+	setresuid16,
+	setreuid,
+	setreuid16,
+	setrlimit,
+	setsid,
+	setsockopt,
+	settimeofday,
+	settimeofday32,
+	setuid,
+	setxattr,
+	sgetmask,
+	shmat,
+	shmctl,
+	shmdt,
+	shmget,
+	sigaction,
+	sigaction32,
+	sigaltstack,
+	signal,
+	signalfd,
+	sigpending,
+	sigprocmask,
+	sigreturn,
+	sigsuspend,
+	socket,
+	socketpair,
+	splice,
+	ssetmask,
+	stat,
+	statfs,
+	statfs64,
+	stime,
+	swapoff,
+	swapon,
+	symlink,
+	symlinkat,
+	sync,
+	sys32_adjtimex,
+	sys32_ptrace,
+	sys32_rt_sigpending,
+	sys32_rt_sigqueueinfo,
+	sys32_rt_sigtimedwait,
+	sys32_sched_rr_get_interval,
+	sys32_sched_setparam,
+	sys32_sendfile64,
+	sys32_sigaltstack,
+	sys32_sigreturn,
+	sys32_swapcontext,
+	sys32_sysinfo,
+	sys32_utimes,
+	sys64_time,
+	sysctl,
+	sysctl32,
+	sysfs,
+	sysinfo,
+	syslog,
+	tee,
+	tgkill,
+	time,
+	timer_create,
+	timer_delete,
+	timer_getoverrun,
+	timer_gettime,
+	timer_settime,
+	timerfd_create,
+	timerfd_gettime,
+	timerfd_settime,
+	times,
+	tkill,
+	truncate,
+	umask,
+	umount,
+	uname,
+	unlink,
+	unshare,
+	uselib,
+	userfaultfd,
+	ustat,
+	ustat32,
+	utime,
+	utimes,
+	vfork,
+	vhangup,
+	vm86,
+	vm86_warning,
+	vm86old,
+	wait4,
+	waitid,
+	waitpid
+} ? {}
+
+probe syscall = fd_syscall, dirfd_syscall, other_syscall {
+	if (filter() == 1) next
+}
+
+probe syscall {
+	sysc_str[tid()] = sprintf("%s<%d> %s(%s)",
 		execname(),
 		tid(),
 		name,
 		argstr)
 }
 
-probe nd_syscall.*.return {
-	timestamp = gettimeofday_ns()
+probe syscall.return {
+	rettime_ns = gettimeofday_ns()
+	if (!([tid(), *] in sysc_capcounts)) next
 
-	if (filter()) next
-	if (sysc_checks_for_caps[sysc_id, tid()] != 1) next
-
-	line = sprintf("%d %s = %s",
-			timestamp,
-			sysc_str[sysc_id, tid()],
+	if (tid() in sysc_str) {
+		sysc_str[tid()] = sprintf("%d %s = %s",
+			rettime_ns,
+			sysc_str[tid()],
 			retstr)
+	} else {
+		sysc_str[tid()] = "--- MISSED SYSCALL ---"
+	}
 
-	sysc_capstr = ""
-	foreach ([i, t, c] in sysc_caps_checked) {
-		if (i != sysc_id || t != tid()) continue
+	capcounts_str = ""
+	foreach ([_tid, c] in sysc_capcounts[tid(), *]) {
 		capstr = sprintf("%s:%d",
 			capabilities[c],
-			@count(sysc_caps_checked[sysc_id, tid(), c]))
-		if (strlen(sysc_capstr) > 0) {
-			sysc_capstr = sprintf("%s, %s", sysc_capstr, capstr)
+			@count(sysc_capcounts[tid(), c]))
+		if (strlen(capcounts_str) > 0) {
+			capcounts_str = sprintf("%s, %s",
+				capcounts_str,
+				capstr)
 		} else {
-			sysc_capstr = sprintf("%s", capstr)
+			capcounts_str = sprintf("%s", capstr)
 		}
 	}
 
-	if (strlen(sysc_capstr) > 0) {
-		line = sprintf("%s {%s}", line, sysc_capstr)
+	if (strlen(capcounts_str) > 0) {
+		sysc_str[tid()] = sprintf("%s {%s}", sysc_str[tid()], capcounts_str)
 	}
 
-	printf("%s\n", line)
+	delete sysc_capcounts[tid(), *]
 }
 
-probe nd_syscall.{open, openat, socket}.return {
-	timestamp = gettimeofday_ns()
+probe fd_syscall, dirfd_syscall if (with_context == 1) {
+	@this1 = int_arg(1)
+}
 
-	if (filter()) next
-	if (sysc_checks_for_caps[sysc_id, tid()] == 1) next
-	if (with_context == 0) next
+probe nd_syscall.{
+	creat,
+	memfd_create,
+	open
+} if (with_context == 1) {
+	@this2 = user_string2(pointer_arg(1), "-")
+}
+
+probe nd_syscall.openat if (with_context == 1) {
+	_pathname = user_string2(pointer_arg(2), "-")
+	if (_pathname !~ "^/") {
+		_fd = int_arg(1)
+		if (_fd == @AT_FDCWD) {
+			cwd = fullpath_struct_path(task_cwd_path(pid2task(pid())))
+			_pathname = sprintf("%s/%s", cwd, _pathname)
+		} else {
+			_pathname = sprintf("%s/%s",
+				sysc_context[tid(), _fd],
+				_pathname)
+		}
+	}
+	@this2 = _pathname
+}
+
+probe nd_syscall.{
+	creat,
+	memfd_create,
+	open,
+	openat
+}.return if (with_context == 1) {
 	if (retval < 0) next
-
-	printf("%d %s = %d\n", timestamp, sysc_str[sysc_id, tid()], retval)
+	sysc_context[tid(), retval] = @this2
 }
 
-probe kprobe.function("cap_capable").call {
-	if (filter()) next
-	sysc_checks_for_caps[sysc_id, tid()] = 1
-	cap = int_arg(3)
-	sysc_caps_checked[sysc_id, tid(), cap] <<< 1
+probe syscall.return += fd_syscall.return if (with_context == 1) {
+	_fd = @this1
+	println(sprintf("%s [%d:%s]",
+		sysc_str[tid()],
+		_fd,
+		sysc_context[tid(), _fd]))
+}
+
+probe syscall.return += dirfd_syscall.return if (with_context == 1) {
+	_fd = @this1
+	if (_fd != @AT_FDCWD) {
+		sysc_str[tid()] = sprintf("%s [%d:%s]",
+			sysc_str[tid()],
+			_fd,
+			sysc_context[tid(), _fd])
+	}
+	println(sysc_str[tid()])
+}
+
+probe syscall.return += other_syscall.return {
+	println(sysc_str[tid()])
 }
