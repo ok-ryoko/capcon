@@ -37,7 +37,7 @@
 # - `nd_syscall.nfsservctl`
 # - `nd_syscall.timerfd`
 # - `nd_syscall.tux`
-# 
+#
 # Tested with SystemTap v4.8 and Linux v6.0.7 on a x86_64 machine
 
 @define AT_FDCWD %( -100 %)
