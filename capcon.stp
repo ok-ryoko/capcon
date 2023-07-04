@@ -659,23 +659,30 @@ probe nd_syscall.{
 	sysc_context[tid(), retval] = @this2
 }
 
-probe syscall.return += fd_syscall.return if (with_context == 1) {
-	_fd = @this1
-	println(sprintf("%s [%d:%s]",
-		sysc_str[tid()],
-		_fd,
-		sysc_context[tid(), _fd]))
-}
-
-probe syscall.return += dirfd_syscall.return if (with_context == 1) {
-	_fd = @this1
-	if (_fd != @AT_FDCWD) {
-		sysc_str[tid()] = sprintf("%s [%d:%s]",
-			sysc_str[tid()],
+probe syscall.return += fd_syscall.return {
+	line = sysc_str[tid()]
+	if (with_context == 1) {
+		_fd = @this1
+		line = sprintf("%s [%d:%s]",
+			line,
 			_fd,
 			sysc_context[tid(), _fd])
 	}
-	println(sysc_str[tid()])
+	println(line)
+}
+
+probe syscall.return += dirfd_syscall.return {
+	line = sysc_str[tid()]
+	if (with_context == 1) {
+		_fd = @this1
+		if (_fd != @AT_FDCWD) {
+			line = sprintf("%s [%d:%s]",
+				line,
+				_fd,
+				sysc_context[tid(), _fd])
+		}
+	}
+	println(line)
 }
 
 probe syscall.return += other_syscall.return {
