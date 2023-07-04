@@ -601,7 +601,7 @@ probe syscall.return {
 	}
 
 	capcounts_str = ""
-	foreach ([_tid, c] in sysc_capcounts[tid(), *]) {
+	foreach ([_tid, c+] in sysc_capcounts[tid(), *]) {
 		capstr = sprintf("%s:%d",
 			capabilities[c],
 			@count(sysc_capcounts[tid(), c]))
