@@ -1,0 +1,1 @@
+1688570115059624811 chmod<1279> fchmodat(AT_FDCWD, "/etc/sudoers.d/99-custom", 0440) = 0 {CAP_FOWNER:1}
