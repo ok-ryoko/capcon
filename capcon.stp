@@ -16,7 +16,7 @@
 # - the syscall name, arguments and return value, and
 # - the name and count of each capability checked during the syscall
 #
-# Does not require debuginfo
+# Does not require debuginfo or guru mode
 #
 # When `follow_forks` is equal to 1 and this script is run in target process
 # mode, print a trace for each child process of the target process

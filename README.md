@@ -21,13 +21,24 @@ $ sudo stap \
 1687903555843481595 useradd<1296> fchown(7, 1001, 1001) = 0 {CAP_FOWNER:1, CAP_CHOWN:2} [7:/home/user/.bashrc]
 ```
 
-The line leads with the number of nanoseconds since the Unix epoch when the syscall returned. The command name and thread ID follow. We then have the syscall’s name, arguments and return value. Next, curly braces enclose a list of capabilities that were checked during the syscall, each annotated with the number of checks that were made. Last, square brackets surround the file descriptor taken by fchown, which *capcon.stp* has annotated with the corresponding file path. From this line, we can infer that fchown triggers checks for `CAP_FOWNER` and `CAP_CHOWN` when changing the owner of a file (here, *.bashrc*) that has been copied from */etc/skel* to the new user’s home directory.
+From left to right, we have:
+
+- the number of nanoseconds since the Unix epoch when the syscall returned;
+- the command name;
+- the thread ID, in angular brackets;
+- the syscall’s name;
+- the syscall’s arguments, in parentheses;
+- the syscall’s return value;
+- the capabilities that were checked during the syscall, in curly braces, and
+- the file descriptor taken by the syscall and the corresponding file path, in square brackets.
+
+From this line, we can infer that fchown triggers checks for `CAP_FOWNER` and `CAP_CHOWN` when changing the owner of a file (here, *.bashrc*) that has been copied from */etc/skel* to the new user’s home directory.
 
 ## Requirements and compatibility
 
 *capcon.stp* has been tested with SystemTap v4.8 on a x86_64 machine running Linux v6.0.7. It may run on other versions of SystemTap not earlier than v4.1, which introduced the `@this1`, …, `@this8` macros.
 
-*capcon.stp* doesn’t require debuginfo.
+*capcon.stp* doesn’t require debuginfo or guru mode.
 
 ## Assumptions
 
